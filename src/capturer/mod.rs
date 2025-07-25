@@ -1,8 +1,9 @@
 pub mod engine;
 
-use std::{error::Error, sync::mpsc};
-
 use engine::ChannelItem;
+use std::error::Error;
+use tokio::sync::watch;
+use windows_capture::frame;
 
 use crate::{
     frame::{Frame, FrameType},
@@ -41,6 +42,8 @@ impl Resolution {
     }
 }
 
+unsafe impl Send for Capturer {}
+
 #[derive(Debug, Default, Clone)]
 pub struct Point {
     pub x: f64,
@@ -61,7 +64,7 @@ pub struct Area {
 /// Options passed to the screen capturer
 #[derive(Debug, Default, Clone)]
 pub struct Options {
-    pub fps: u32,
+    pub fps: f32,
     pub show_cursor: bool,
     pub show_highlight: bool,
     pub target: Option<Target>,
@@ -75,7 +78,7 @@ pub struct Options {
 /// Screen capturer class
 pub struct Capturer {
     engine: engine::Engine,
-    rx: mpsc::Receiver<ChannelItem>,
+    rx: watch::Receiver<ChannelItem>,
 }
 
 #[derive(Debug)]
@@ -104,7 +107,8 @@ impl Capturer {
         note = "Use `build` instead of `new` to create a new capturer instance."
     )]
     pub fn new(options: Options) -> Capturer {
-        let (tx, rx) = mpsc::channel();
+        let frame_init = Frame::None;
+        let (tx, rx) = watch::channel(frame_init);
         let engine = engine::Engine::new(&options, tx);
 
         Capturer { engine, rx }
@@ -119,8 +123,9 @@ impl Capturer {
         if !has_permission() {
             return Err(CapturerBuildError::PermissionNotGranted);
         }
+        let frame_init = Frame::None;
+        let (tx, rx) = watch::channel(frame_init);
 
-        let (tx, rx) = mpsc::channel();
         let engine = engine::Engine::new(&options, tx);
 
         Ok(Capturer { engine, rx })
@@ -139,9 +144,11 @@ impl Capturer {
     }
 
     /// Get the next captured frame
-    pub fn get_next_frame(&self) -> Result<Frame, mpsc::RecvError> {
+    pub async fn get_next_frame(&mut self) -> Result<Frame, watch::error::RecvError> {
+        // why loop? data from macos in process_channel_item maybe error.
         loop {
-            let res = self.rx.recv()?;
+            self.rx.changed().await?;
+            let res = self.rx.borrow().clone();
 
             if let Some(frame) = self.engine.process_channel_item(res) {
                 return Ok(frame);

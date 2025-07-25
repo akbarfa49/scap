@@ -1,3 +1,5 @@
+use crate::targets::win;
+
 use super::{Display, Target};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::{
@@ -28,11 +30,12 @@ pub fn get_all_targets() -> Vec<Target> {
     for window in windows {
         let id = window.as_raw_hwnd() as u32;
         let title = window.title().unwrap().to_string();
-
+        let executable = window.process_name().unwrap_or_default();
         let target = Target::Window(super::Window {
             id,
             title,
             raw_handle: HWND(window.as_raw_hwnd()),
+            executable: executable,
         });
         targets.push(target);
     }
@@ -95,7 +98,6 @@ pub fn get_target_dimensions(target: &Target) -> (u64, u64) {
         },
         Target::Display(display) => {
             let monitor = Monitor::from_raw_hmonitor(display.raw_handle.0);
-
             (
                 monitor.width().unwrap() as u64,
                 monitor.height().unwrap() as u64,

@@ -3,22 +3,24 @@ use crate::{
     frame::{BGRAFrame, Frame, FrameType},
     targets::{self, get_scale_factor, Target},
 };
-use std::cmp;
-use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{cmp, time::Duration};
+use tokio::sync::watch;
 use windows_capture::{
-    capture::{CaptureControl, GraphicsCaptureApiHandler},
+    capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
     frame::Frame as WCFrame,
     graphics_capture_api::InternalCaptureControl,
     monitor::Monitor as WCMonitor,
-    settings::{ColorFormat, CursorCaptureSettings, DrawBorderSettings, Settings as WCSettings},
+    settings::{
+        ColorFormat, CursorCaptureSettings, DrawBorderSettings, SecondaryWindowSettings,
+        Settings as WCSettings,
+    },
     window::Window as WCWindow,
 };
-use windows_capture::capture::Context;
 
 #[derive(Debug)]
 struct Capturer {
-    pub tx: mpsc::Sender<Frame>,
+    pub tx: watch::Sender<Frame>,
     pub crop: Option<Area>,
 }
 
@@ -31,6 +33,7 @@ enum Settings {
 pub struct WCStream {
     settings: Settings,
     capture_control: Option<CaptureControl<Capturer, Box<dyn std::error::Error + Send + Sync>>>,
+    interval: Duration,
 }
 
 impl GraphicsCaptureApiHandler for Capturer {
@@ -75,8 +78,8 @@ impl GraphicsCaptureApiHandler for Capturer {
 
                 let bgr_frame = BGRAFrame {
                     display_time: current_time,
-                    width: cropped_area.size.width as i32,
-                    height: cropped_area.size.height as i32,
+                    width: cropped_area.size.width as u32,
+                    height: cropped_area.size.height as u32,
                     data: raw_frame_buffer.to_vec(),
                 };
 
@@ -95,11 +98,10 @@ impl GraphicsCaptureApiHandler for Capturer {
                     .as_nanos() as u64;
                 let bgr_frame = BGRAFrame {
                     display_time: current_time,
-                    width: frame.width() as i32,
-                    height: frame.height() as i32,
+                    width: frame.width(),
+                    height: frame.height(),
                     data: frame_data,
                 };
-
                 self.tx
                     .send(Frame::BGRA(bgr_frame))
                     .expect("Failed to send data");
@@ -132,11 +134,11 @@ impl WCStream {
 
 #[derive(Clone, Debug)]
 struct FlagStruct {
-    pub tx: mpsc::Sender<Frame>,
+    pub tx: watch::Sender<Frame>,
     pub crop: Option<Area>,
 }
 
-pub fn create_capturer(options: &Options, tx: mpsc::Sender<Frame>) -> WCStream {
+pub fn create_capturer(options: &Options, tx: watch::Sender<Frame>) -> WCStream {
     let target = options
         .target
         .clone()
@@ -151,12 +153,27 @@ pub fn create_capturer(options: &Options, tx: mpsc::Sender<Frame>) -> WCStream {
         true => CursorCaptureSettings::WithCursor,
         false => CursorCaptureSettings::WithoutCursor,
     };
-
+    // second to nano
+    let nanos: u32 = 1_000_000_000;
+    let mut minimum_update_interval = Duration::from_secs(0);
+    if options.fps > 0.0 {
+        minimum_update_interval = Duration::from_nanos((nanos as f32 / options.fps) as u64);
+    }
+    println!("{}", minimum_update_interval.as_secs());
+    let mut draw_border = DrawBorderSettings::WithoutBorder;
+    if options.show_highlight {
+        draw_border = DrawBorderSettings::WithBorder;
+    }
     let settings = match target {
         Target::Display(display) => Settings::Display(WCSettings::new(
             WCMonitor::from_raw_hmonitor(display.raw_handle.0),
             show_cursor,
-            DrawBorderSettings::Default,
+            draw_border,
+            SecondaryWindowSettings::Default,
+            windows_capture::settings::MinimumUpdateIntervalSettings::Custom(
+                minimum_update_interval,
+            ),
+            windows_capture::settings::DirtyRegionSettings::Default,
             color_format,
             FlagStruct {
                 tx,
@@ -166,7 +183,12 @@ pub fn create_capturer(options: &Options, tx: mpsc::Sender<Frame>) -> WCStream {
         Target::Window(window) => Settings::Window(WCSettings::new(
             WCWindow::from_raw_hwnd(window.raw_handle.0),
             show_cursor,
-            DrawBorderSettings::Default,
+            draw_border,
+            SecondaryWindowSettings::Default,
+            windows_capture::settings::MinimumUpdateIntervalSettings::Custom(
+                minimum_update_interval,
+            ),
+            windows_capture::settings::DirtyRegionSettings::Default,
             color_format,
             FlagStruct {
                 tx,
@@ -178,6 +200,7 @@ pub fn create_capturer(options: &Options, tx: mpsc::Sender<Frame>) -> WCStream {
     WCStream {
         settings,
         capture_control: None,
+        interval: minimum_update_interval,
     }
 }
 

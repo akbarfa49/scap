@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use tokio::sync::watch;
 
 use super::Options;
 use crate::frame::Frame;
@@ -37,10 +37,15 @@ pub fn get_output_frame_size(options: &Options) -> [u32; 2] {
         return [0, 0];
     }
 }
+enum EngineStatus {
+    Start,
+    Stop,
+    None,
+}
 
 pub struct Engine {
     options: Options,
-
+    status: EngineStatus,
     #[cfg(target_os = "macos")]
     mac: screencapturekit::sc_stream::SCStream,
     #[cfg(target_os = "macos")]
@@ -54,7 +59,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(options: &Options, tx: mpsc::Sender<ChannelItem>) -> Engine {
+    pub fn new(options: &Options, tx: watch::Sender<ChannelItem>) -> Engine {
         #[cfg(target_os = "macos")]
         {
             let error_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -73,6 +78,7 @@ impl Engine {
             return Engine {
                 win,
                 options: (*options).clone(),
+                status: EngineStatus::None,
             };
         }
 
@@ -87,6 +93,10 @@ impl Engine {
     }
 
     pub fn start(&mut self) {
+        match self.status {
+            EngineStatus::Start => return,
+            _ => {}
+        }
         #[cfg(target_os = "macos")]
         {
             // self.mac.add_output(Capturer::new(tx));
@@ -102,6 +112,7 @@ impl Engine {
         {
             self.linux.start_capture();
         }
+        self.status = EngineStatus::Start;
     }
 
     pub fn stop(&mut self) {
@@ -119,6 +130,7 @@ impl Engine {
         {
             self.linux.stop_capture();
         }
+        self.status = EngineStatus::Stop;
     }
 
     pub fn get_output_frame_size(&mut self) -> [u32; 2] {
